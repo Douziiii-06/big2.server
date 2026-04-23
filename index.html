@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>大老二多人連線最終版</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        body { background: #113311; color: white; font-family: "Microsoft JhengHei", sans-serif; display: flex; flex-direction: column; align-items: center; margin: 0; }
+        
+        /* 大廳 */
+        #lobby { position: fixed; inset: 0; background: rgba(0,0,0,0.9); z-index: 1000; display: flex; justify-content: center; align-items: center; }
+        .box { background: white; color: #333; padding: 40px; border-radius: 15px; text-align: center; width: 320px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        input { padding: 12px; width: 90%; margin: 10px 0; border: 1px solid #ccc; border-radius: 8px; font-size: 1em; box-sizing: border-box; }
+        button { padding: 12px 24px; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; transition: 0.2s; font-size: 1em; }
+        .btn-main { background: #27ae60; color: white; width: 100%; margin-top: 5px; }
+        .btn-play { background: #f1c40f; color: #333; }
+        .btn-pass { background: #95a5a6; color: white; }
+
+        /* 遊戲介面 */
+        #game-ui { display: none; width: 95%; max-width: 900px; padding: 20px; text-align: center; }
+        #table { width: 100%; height: 200px; border: 2px dashed rgba(255,255,255,0.2); border-radius: 100px; margin: 20px 0; display: flex; align-items: center; justify-content: center; position: relative; }
+        .hand { display: flex; gap: 5px; justify-content: center; flex-wrap: wrap; margin-top: 30px; }
+        .card { width: 55px; height: 85px; background: white; color: black; border-radius: 6px; display: inline-flex; justify-content: center; align-items: center; font-weight: bold; cursor: pointer; border: 1px solid #333; user-select: none; }
+        .card.red { color: #e74c3c; }
+        .card.selected { transform: translateY(-20px); border: 3px solid #f1c40f; box-shadow: 0 5px 15px rgba(0,0,0,0.4); }
+        
+        #history-panel { width: 100%; height: 120px; background: rgba(0,0,0,0.3); border-radius: 10px; margin-top: 20px; padding: 10px; overflow-y: auto; text-align: left; border: 1px solid #555; font-size: 0.9em; }
+        .history-item { padding: 4px 0; border-bottom: 1px solid #333; }
+        #player-counts { position: absolute; top: 10px; right: 20px; text-align: right; background: rgba(0,0,0,0.4); padding: 10px; border-radius: 8px; font-size: 0.85em; }
+    </style>
+</head>
+<body>
+
+    <div id="lobby">
+        <div class="box">
+            <h2>🃏 大老二多人房</h2>
+            <input type="text" id="name" placeholder="請輸入暱稱">
+            <button class="btn-main" onclick="createRoom()">➕ 創建新房間</button>
+            <div style="margin: 15px 0; color: #999; font-size: 0.8em;">— 或 —</div>
+            <input type="text" id="roomid" placeholder="請輸入 4 位數房號">
+            <button class="btn-main" style="background:#2980b9" onclick="joinRoom()">🚪 加入房間</button>
+        </div>
+    </div>
+
+    <div id="game-ui">
+        <div style="display:flex; justify-content: space-between;">
+            <h3 id="info">房號: --</h3>
+            <div id="player-counts"></div>
+        </div>
+        
+        <button id="start-btn" class="btn-play" style="display:none; margin-bottom:15px;" onclick="start()">🔥 開始遊戲 (需 3-4 人)</button>
+        <div id="status">正在等待其他玩家加入...</div>
+        
+        <div id="table">
+            <div id="last-play"></div>
+        </div>
+
+        <div class="controls">
+            <button id="play-btn" class="btn-play" onclick="play()" disabled>出牌</button>
+            <button id="pass-btn" class="btn-pass" onclick="pass()" disabled>Pass</button>
+        </div>
+
+        <div id="hand" class="hand"></div>
+        
+        <div id="history-panel">
+            <div style="color: #f1c40f; border-bottom: 1px solid #555; margin-bottom: 5px; font-weight: bold;">📜 出牌紀錄</div>
+            <div id="history-list"></div>
+        </div>
+    </div>
+
+<script>
+    const socket = io();
+    let my = { id: 0, room: "", name: "", cards: [] };
+    let sel = new Set();
+    const RANKS = ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A', '2'];
+
+    function createRoom() {
+        my.name = document.getElementById('name').value.trim();
+        if(my.name) socket.emit('createRoom', my.name);
+        else alert("請輸入暱稱");
+    }
+    function joinRoom() {
+        my.name = document.getElementById('name').value.trim();
+        my.room = document.getElementById('roomid').value.trim();
+        if(my.name && my.room) socket.emit('joinRoom', {roomID: my.room, playerName: my.name});
+        else alert("名字與房號不可為空");
+    }
+    function start() { socket.emit('startGame', my.room); }
+
+    socket.on('init', (data) => {
+        my.id = data.playerIndex; my.room = data.roomID;
+        document.getElementById('lobby').style.display = 'none';
+        document.getElementById('game-ui').style.display = 'block';
+        document.getElementById('info').innerText = `房號: ${my.room} | 玩家: ${my.name}`;
+        if(data.isHost) document.getElementById('start-btn').style.display = 'inline-block';
+    });
+
+    socket.on('receiveCards', (cards) => {
+        my.cards = cards.sort((a,b) => RANKS.indexOf(a.rank) - RANKS.indexOf(b.rank));
+        renderHand();
+    });
+
+    socket.on('gameStartSync', (data) => {
+        document.getElementById('start-btn').style.display = 'none';
+        syncTurn(data.turnIndex);
+        updateCounts(data.counts);
+    });
+
+    socket.on('playSuccess', (data) => {
+        syncTurn(data.turnIndex);
+        if(data.cards.length > 0) {
+            if(data.lastPlayer === my.name) removePlayed(data.cards);
+            document.getElementById('last-play').innerHTML = data.cards.map(c => renderCardHTML(c)).join('');
+            addLog(data.lastPlayer, data.cards);
+        } else {
+            addLog(data.lastPlayer, null);
+        }
+        updateCounts(data.counts);
+    });
+
+    socket.on('errorMsg', (msg) => alert(msg));
+    socket.on('systemMsg', (msg) => {
+        const log = document.getElementById('history-list');
+        log.innerHTML = `<div style="color:#2ecc71">📢 ${msg}</div>` + log.innerHTML;
+    });
+
+    socket.on('gameOver', (data) => {
+        alert(`🏆 遊戲結束！贏家是：${data.winner}`);
+        document.getElementById('status').innerText = `🎉 勝者：${data.winner}`;
+        document.getElementById('play-btn').disabled = true;
+        document.getElementById('pass-btn').disabled = true;
+    });
+
+    function syncTurn(idx) {
+        const isMy = (idx === my.id);
+        document.getElementById('status').innerText = isMy ? "👉 輪到你了！" : `等待玩家 ${idx+1} 出牌...`;
+        document.getElementById('play-btn').disabled = !isMy;
+        document.getElementById('pass-btn').disabled = !isMy;
+    }
+
+    function renderCardHTML(c) {
+        const isRed = (c.suit === '♥' || c.suit === '♦');
+        return `<div class="card ${isRed?'red':''}" style="margin:2px;">${c.suit}${c.rank}</div>`;
+    }
+
+    function renderHand() {
+        const h = document.getElementById('hand');
+        h.innerHTML = my.cards.map((c, i) => {
+            const isRed = (c.suit === '♥' || c.suit === '♦');
+            return `<div class="card ${isRed?'red':''} ${sel.has(i)?'selected':''}" onclick="toggle(${i})">${c.suit}${c.rank}</div>`;
+        }).join('');
+    }
+
+    function toggle(i) {
+        if(sel.has(i)) sel.delete(i); else sel.add(i);
+        renderHand();
+    }
+
+    function updateCounts(counts) {
+        if(!counts) return;
+        document.getElementById('player-counts').innerHTML = counts.map(p => `<div>${p.name}: ${p.count}張</div>`).join('');
+    }
+
+    function addLog(name, cards) {
+        const log = document.getElementById('history-list');
+        let cardStr = cards ? cards.map(c => c.suit+c.rank).join(' ') : "選擇了 Pass";
+        log.innerHTML = `<div class="history-item"><b>${name}:</b> ${cardStr}</div>` + log.innerHTML;
+    }
+
+    function play() {
+        const cards = Array.from(sel).map(i => my.cards[i]);
+        if(cards.length === 0) return;
+        socket.emit('playCards', { roomID: my.room, cards, playerIndex: my.id, playerName: my.name });
+    }
+
+    function removePlayed(playedCards) {
+        my.cards = my.cards.filter(c => !playedCards.some(pc => pc.rank === c.rank && pc.suit === c.suit));
+        sel.clear();
+        renderHand();
+    }
+
+    function pass() {
+        socket.emit('pass', { roomID: my.room, playerIndex: my.id, playerName: my.name });
+    }
+</script>
+</body>
+</html>
